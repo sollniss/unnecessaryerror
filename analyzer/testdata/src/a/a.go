@@ -99,13 +99,13 @@ func NamedReturn() {
 	}
 }
 
-type receiver struct{}
+type Receiver1 struct{}
 
-func (r *receiver) methodReturnsErr() error { // want "error is only ever nil-checked; consider returning a bool instead"
+func (r *Receiver1) methodReturnsErr() error { // want "error is only ever nil-checked; consider returning a bool instead"
 	return errors.New("")
 }
 
-func (r *receiver) MethodReturnsErr() {
+func (r *Receiver1) MethodReturnsErr() {
 	err := r.methodReturnsErr()
 	if err != nil {
 		return
@@ -296,20 +296,20 @@ func GenericError2() {
 	return
 }
 
-func callchain1() error { // want "error is only ever nil-checked; consider returning a bool instead"
+func callchain1() error {
 	return errors.New("")
 }
 
-func callchain1A(err error) error { // want "error is only ever nil-checked; consider returning a bool instead"
+func callchain1A(err error) error {
 	return err
 }
 
-func callchain1B(err error) error { // want "error is only ever nil-checked; consider returning a bool instead"
-	return callchain1A(err)
+func callchain1B(err error) error {
+	return err
 }
 
 func Callchain1() error {
-	err := callchain1A(callchain1B(callchain1()))
+	err := callchain1B(callchain1A(callchain1()))
 	if err != nil {
 		return err
 	}
@@ -320,15 +320,35 @@ func callchain2() error { // want "error is only ever nil-checked; consider retu
 	return errors.New("")
 }
 
-func callchain2A() error { // want "error is only ever nil-checked; consider returning a bool instead"
-	return callchain2()
+func callchain2A(err error) error { // want "error is only ever nil-checked; consider returning a bool instead"
+	return err
 }
 
-func callchain2B() error { // want "error is only ever nil-checked; consider returning a bool instead"
-	return callchain2A()
+func callchain2B(err error) error { // want "error is only ever nil-checked; consider returning a bool instead"
+	return err
 }
-func Callchain2() {
-	err := callchain2B()
+
+func Callchain2() error {
+	err := callchain2B(callchain2A(callchain2()))
+	if err != nil {
+		return nil
+	}
+	return nil
+}
+
+func callchain3() error { // want "error is only ever nil-checked; consider returning a bool instead"
+	return errors.New("")
+}
+
+func callchain3A() error { // want "error is only ever nil-checked; consider returning a bool instead"
+	return callchain3()
+}
+
+func callchain3B() error { // want "error is only ever nil-checked; consider returning a bool instead"
+	return callchain3A()
+}
+func Callchain3() {
+	err := callchain3B()
 	if err != nil {
 		return
 	}

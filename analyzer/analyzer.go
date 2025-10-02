@@ -3,6 +3,8 @@ package analyzer
 import (
 	"go/token"
 	"go/types"
+	"maps"
+	"slices"
 	"strings"
 
 	"golang.org/x/tools/go/analysis"
@@ -22,15 +24,22 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	ssaInput := pass.ResultOf[buildssa.Analyzer].(*buildssa.SSA)
 
 	fnErrs := findReturnedErrors(ssaInput.SrcFuncs)
-	seen := make(map[ssa.Instruction]struct{})
+	checking := make(map[ssa.Instruction]struct{})
+	seen := make(map[ssa.Instruction]bool)
 
 	var isUsed func(instr ssa.Instruction) bool
-	isUsed = func(instr ssa.Instruction) bool {
-		if _, ok := seen[instr]; ok {
+	isUsed = func(instr ssa.Instruction) (result bool) {
+		if v, ok := seen[instr]; ok {
+			return v
+		}
+		if _, ok := checking[instr]; ok {
 			return false
 		}
-		seen[instr] = struct{}{}
-
+		checking[instr] = struct{}{}
+		defer func() {
+			seen[instr] = result
+			delete(checking, instr)
+		}()
 		switch v := instr.(type) {
 		case *ssa.FieldAddr, *ssa.IndexAddr, *ssa.MapUpdate, *ssa.Send, *ssa.TypeAssert:
 			return true
@@ -43,7 +52,9 @@ func run(pass *analysis.Pass) (interface{}, error) {
 				return true // Call to external function.
 			}
 			for _, r := range *v.Referrers() {
-				isUsed(r)
+				if isUsed(r) {
+					return true
+				}
 			}
 		case *ssa.Return:
 			if !isUnexpFunc(v.Parent()) {
@@ -51,7 +62,9 @@ func run(pass *analysis.Pass) (interface{}, error) {
 			}
 			callers := findCaller(ssaInput.SrcFuncs, v.Parent())
 			for _, caller := range callers {
-				isUsed(caller)
+				if isUsed(caller) {
+					return true
+				}
 			}
 		case *ssa.Store:
 			if addr, ok := v.Addr.(ssa.Instruction); ok {
@@ -73,23 +86,53 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	}
 	for fn, errIdxs := range fnErrs {
 		for i, errs := range errIdxs {
-			var ok bool
+			var used bool
 		errIdxLoop:
 			for _, err := range errs {
 				for _, ref := range *err.Referrers() {
 					if isUsed(ref) {
-						ok = true
+						used = true
 						break errIdxLoop
 					}
 				}
 			}
-			if !ok {
+			if !used {
 				pass.Reportf(returnValPos(fn, i), "error is only ever nil-checked; consider returning a bool instead")
 			}
 		}
 
 	}
+	//reportStable(pass, fnErrs, isUsed)
 	return nil, nil
+}
+
+// reportStable iterates fnErrs in a stable order and reports the findings.
+func reportStable(
+	pass *analysis.Pass,
+	fnErrs map[*ssa.Function]map[int][]ssa.Value,
+	isUsed func(instr ssa.Instruction) bool,
+) {
+	sortedFns := slices.SortedFunc(maps.Keys(fnErrs), func(a, b *ssa.Function) int {
+		return int(a.Pos() - b.Pos())
+	})
+	for _, fn := range sortedFns {
+		for _, i := range slices.Sorted(maps.Keys(fnErrs[fn])) {
+			errs := fnErrs[fn][i]
+			var used bool
+		errIdxLoop:
+			for _, err := range errs {
+				for _, ref := range *err.Referrers() {
+					if isUsed(ref) {
+						used = true
+						break errIdxLoop
+					}
+				}
+			}
+			if !used {
+				pass.Reportf(returnValPos(fn, i), "error is only ever nil-checked; consider returning a bool instead")
+			}
+		}
+	}
 }
 
 func findReturnedErrors(funcs []*ssa.Function) map[*ssa.Function]map[int][]ssa.Value {

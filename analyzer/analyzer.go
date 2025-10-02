@@ -57,13 +57,38 @@ func run(pass *analysis.Pass) (interface{}, error) {
 				}
 			}
 		case *ssa.Return:
-			if !isUnexpFunc(v.Parent()) {
+			containingFn := v.Parent()
+			if !isUnexpFunc(containingFn) {
 				return true
 			}
-			callers := findCaller(ssaInput.SrcFuncs, v.Parent())
+			callers := findCaller(ssaInput.SrcFuncs, containingFn)
 			for _, caller := range callers {
 				if isUsed(caller) {
 					return true
+				}
+			}
+			// There are no callers in the current package.
+			// TODO: Can we just return true here?
+
+			// Function containing the return might be called externally.
+			// Find out if it is passed to an external function.
+			refs := containingFn.Referrers()
+			if refs == nil {
+				return false // TODO: Happens for callchain3B, what does this mean?
+			}
+			for _, r := range *refs {
+				if call, ok := r.(*ssa.Call); ok {
+					callee := call.Call.StaticCallee()
+					if callee == nil {
+						continue // TODO: Do we need to handle method calls here?
+					}
+					if callee.Pkg != nil && callee.Pkg != containingFn.Pkg {
+						for _, arg := range call.Call.Args {
+							if arg == containingFn {
+								return true // Passed to external function.
+							}
+						}
+					}
 				}
 			}
 		case *ssa.Store:

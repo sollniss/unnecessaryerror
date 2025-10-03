@@ -22,9 +22,10 @@ func causeErr2() error {
 }
 
 func Exported2() {
-	var e a.Exported
-	err := e.CallFuncInMethod(func() error { // OK: passed to external function.
-		return causeErr2()
+	var err error
+	err = a.CallFunc(func() error {
+		err = causeErr2()
+		return err
 	})
 	log.Print(err)
 }

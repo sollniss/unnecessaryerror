@@ -1,6 +1,7 @@
 package a
 
 import (
+	"a/external"
 	"errors"
 	"log"
 	"os"
@@ -59,7 +60,7 @@ func multiFuncReturnErr() error {
 	return errors.New("")
 }
 
-func MultiFuncReturnErr_noret() error {
+func MultiFuncReturnErr_1() error {
 	err := multiFuncReturnErr()
 	if err != nil {
 		return nil
@@ -67,7 +68,7 @@ func MultiFuncReturnErr_noret() error {
 	return nil
 }
 
-func MultiFuncReturnErr_ret() error {
+func MultiFuncReturnErr_2() error {
 	err := multiFuncReturnErr()
 	if err != nil {
 		return err // OK: returned from exported function.
@@ -112,22 +113,40 @@ func (r *Receiver1) MethodReturnsErr() {
 	}
 }
 
-func passToExternalFunc() error {
+func passedToExternal() error {
 	return errors.New("")
 }
 
-func PassToExternalFunc() {
-	err := passToExternalFunc()
+func PassedToExternal() {
+	err := passedToExternal()
 	log.Print(err) // OK: passed to external function.
 }
 
-func passToBuiltinFunc() error {
+func passedToBuiltinFunc() error {
 	return errors.New("")
 }
 
-func PassToBuiltinFunc() {
-	err := passToBuiltinFunc()
+func PassedToBuiltinFunc() {
+	err := passedToBuiltinFunc()
 	println(err) // OK: passed to builtin function.
+}
+
+func funcPassedToExternal_1() error {
+	return errors.New("")
+}
+
+func funcPassedToExternal_2() {
+	err := external.FuncPassedToExternal(funcPassedToExternal_1) // OK: passed to external function.
+	log.Print(err)
+}
+
+func funcPassedToExternalMethod_1() error {
+	return errors.New("")
+}
+
+func funcPassedToExternalMethod_2() {
+	err := (&external.Exported{}).FuncPassedToExternalMethod(funcPassedToExternalMethod_1) // OK: passed to external function.
+	log.Print(err)
 }
 
 func methodCalled() error {
@@ -223,11 +242,21 @@ func Closure() {
 	return
 }
 
-func assignedToExportedGlobalVar() error {
+func assignedToExportedGlobalVar1() error {
 	return errors.New("")
 }
 
-var AssignedToExportedGlobalVar = assignedToExportedGlobalVar() // OK: assigned to global variable.
+var AssignedToExportedGlobalVar1 = assignedToExportedGlobalVar1() // OK: assigned to global variable.
+
+func assignedToExportedGlobalVar2() error {
+	return errors.New("")
+}
+
+var AssignedToExportedGlobalVar2_ error
+
+func AssignedToExportedGlobalVar2() {
+	AssignedToExportedGlobalVar2_ = assignedToExportedGlobalVar2()
+}
 
 func assignedToUnexportedGlobalVar() error {
 	return errors.New("")
@@ -239,14 +268,14 @@ func genericFunc1[T any]() error { // want "error is only ever nil-checked; cons
 	return errors.New("")
 }
 
-func GenericFunc1A() {
+func GenericFunc1_1() {
 	err := genericFunc1[int]()
 	if err != nil {
 		return
 	}
 }
 
-func GenericFunc1B() {
+func GenericFunc1_2() {
 	err := genericFunc1[string]()
 	if err != nil {
 		return
@@ -257,14 +286,14 @@ func genericFunc2[T any]() error {
 	return errors.New("")
 }
 
-func GenericFunc2A() {
+func GenericFunc2_1() {
 	err := genericFunc2[int]()
 	if err != nil {
 		return
 	}
 }
 
-func GenericFunc2B() error {
+func GenericFunc2_2() error {
 	err := genericFunc2[string]()
 	if err != nil {
 		return err // OK: returned from exported function.
@@ -300,16 +329,16 @@ func callchain1() error {
 	return errors.New("")
 }
 
-func callchain1A(err error) error {
+func callchain1_1(err error) error {
 	return err
 }
 
-func callchain1B(err error) error {
+func callchain1_2(err error) error {
 	return err
 }
 
 func Callchain1() error {
-	err := callchain1B(callchain1A(callchain1()))
+	err := callchain1_2(callchain1_1(callchain1()))
 	if err != nil {
 		return err
 	}
@@ -320,16 +349,16 @@ func callchain2() error { // want "error is only ever nil-checked; consider retu
 	return errors.New("")
 }
 
-func callchain2A(err error) error { // want "error is only ever nil-checked; consider returning a bool instead"
+func callchain2_1(err error) error { // want "error is only ever nil-checked; consider returning a bool instead"
 	return err
 }
 
-func callchain2B(err error) error { // want "error is only ever nil-checked; consider returning a bool instead"
+func callchain2_2(err error) error { // want "error is only ever nil-checked; consider returning a bool instead"
 	return err
 }
 
 func Callchain2() error {
-	err := callchain2B(callchain2A(callchain2()))
+	err := callchain2_2(callchain2_1(callchain2()))
 	if err != nil {
 		return nil
 	}
@@ -340,15 +369,15 @@ func callchain3() error { // want "error is only ever nil-checked; consider retu
 	return errors.New("")
 }
 
-func callchain3A() error { // want "error is only ever nil-checked; consider returning a bool instead"
+func callchain3_1() error { // want "error is only ever nil-checked; consider returning a bool instead"
 	return callchain3()
 }
 
-func callchain3B() error { // want "error is only ever nil-checked; consider returning a bool instead"
-	return callchain3A()
+func callchain3_2() error { // want "error is only ever nil-checked; consider returning a bool instead"
+	return callchain3_1()
 }
 func Callchain3() {
-	err := callchain3B()
+	err := callchain3_2()
 	if err != nil {
 		return
 	}
@@ -388,4 +417,88 @@ func NilCheckInForLoop() {
 	for err != nil {
 		return
 	}
+}
+
+func closurePassedToExternal() error {
+	return errors.New("")
+}
+
+func ClosurePassedToExternal() {
+	err := external.ClosurePassedToExternal(func() error { // OK: passed to external function.
+		return closurePassedToExternal()
+	})
+	log.Print(err)
+}
+
+func assignedInClosureToExternal() error { // want "error is only ever nil-checked; consider returning a bool instead"
+	return errors.New("")
+}
+
+func AssignedInClosureToExternal() {
+	var err1 error
+	err2 := external.AssignedInClosure(func() error {
+		err1 = assignedInClosureToExternal()
+		return errors.New("")
+	})
+	log.Print(err1, err2)
+}
+
+func assignedToExternalStructField1() error {
+	return errors.New("")
+}
+
+func AssignedToExternalStructField1() {
+	s := external.AssignedToExternalStructField1{
+		Err: assignedToExternalStructField1(),
+	}
+	_ = s
+}
+
+func assignedToExternalStructField2() error {
+	return errors.New("")
+}
+
+func assignedToExternalStructField2_1() error {
+	err := assignedToExternalStructField2()
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func AssignedToExternalStructField2() {
+	s := external.AssignedToExternalStructField2{
+		Err: assignedToExternalStructField2_1(), // OK: Assigned to struct field.
+	}
+	_ = s
+}
+
+func funcAssignedToExternalStructField1() error {
+	return errors.New("")
+}
+
+func FuncAssignedToExternalStructField1() {
+	s := external.FuncAssignedToExternalStructField1{
+		Func: funcAssignedToExternalStructField1, // OK: Func assigned to struct field.
+	}
+	_ = s
+}
+
+func funcAssignedToExternalStructField2() error {
+	return errors.New("")
+}
+
+func funcAssignedToExternalStructField2_1() error {
+	err := funcAssignedToExternalStructField2()
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func FuncAssignedToExternalStructField2() {
+	s := external.FuncAssignedToExternalStructField2{
+		Func: funcAssignedToExternalStructField2_1, // OK: Caller assigned to struct field.
+	}
+	_ = s
 }

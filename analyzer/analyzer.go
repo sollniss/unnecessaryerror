@@ -73,21 +73,39 @@ func run(pass *analysis.Pass) (interface{}, error) {
 				}
 			}
 			// There are no callers in the current package.
-			// TODO: Can we just return true here?
 
 			// Function containing the return might be called externally.
 			// Find out if it is passed to an external function.
 			refs := containingFn.Referrers()
-			if refs == nil {
-				return false // TODO: Happens for callchain3B, what does this mean?
+			if refs != nil {
+				for _, r := range *refs {
+					if isUsed(r) {
+						return true
+					}
+				}
 			}
-			for _, r := range *refs {
-				if isUsed(r) {
-					return true
+			// Function is not called (inside the current package).
+			// See if it is assigned somewhere.
+			var buf [10]*ssa.Value
+			for _, f := range ssaInput.SrcFuncs {
+				for _, b := range f.Blocks {
+					for _, instr := range b.Instrs {
+						for _, op := range instr.Operands(buf[:0]) {
+							if *op == containingFn {
+								if isUsed(instr) {
+									return true
+								}
+							}
+						}
+					}
 				}
 			}
 
 		case *ssa.Store:
+			obj := pass.Pkg.Scope().Lookup(v.Addr.Name())
+			if obj != nil {
+				return true // Object that was assigned to is global.
+			}
 			if addr, ok := v.Addr.(ssa.Instruction); ok {
 				if isUsed(addr) {
 					return true
@@ -250,108 +268,9 @@ func findCaller(funcs []*ssa.Function, fn *ssa.Function) []*ssa.Call {
 	return calls
 }
 
-func usesVal(instr ssa.Instruction, val ssa.Value) bool {
-	call := func(cc ssa.CallCommon) bool {
-		if recv := cc.Value; recv == val {
-			return true
-		}
-		// While this is an extra function call,
-		// it has higher chance of being optimized by the compiler.
-		return slices.Contains(cc.Args, val)
-	}
-
-	switch v := instr.(type) {
-	case *ssa.Alloc, *ssa.Jump, *ssa.RunDefers:
-		return false
-	case *ssa.BinOp:
-		return v.X == val || v.Y == val
-	case *ssa.Call:
-		return call(v.Call)
-	case *ssa.ChangeInterface:
-		return v.X == val
-	case *ssa.ChangeType:
-		return v.X == val
-	case *ssa.Convert:
-		return v.X == val
-	case *ssa.DebugRef:
-		return v.X == val
-	case *ssa.Defer:
-		return v.DeferStack == val || call(v.Call)
-	case *ssa.Extract:
-		return v.Tuple == val
-	case *ssa.Field:
-		return v.X == val
-	case *ssa.FieldAddr:
-		return v.X == val
-	case *ssa.Go:
-		return call(v.Call)
-	case *ssa.If:
-		return v.Cond == val
-	case *ssa.Index:
-		return v.X == val || v.Index == val
-	case *ssa.IndexAddr:
-		return v.X == val || v.Index == val
-	case *ssa.Lookup:
-		return v.X == val || v.Index == val
-	case *ssa.MakeChan:
-		return v.Size == val
-	case *ssa.MakeClosure:
-		if v.Fn == val {
-			return true
-		}
-		return slices.Contains(v.Bindings, val)
-	case *ssa.MakeInterface:
-		return v.X == val
-	case *ssa.MakeMap:
-		return v.Reserve == val
-	case *ssa.MakeSlice:
-		return v.Len == val || v.Cap == val
-	case *ssa.MapUpdate:
-		return v.Map == val || v.Key == val || v.Value == val
-	case *ssa.MultiConvert:
-		return v.X == val
-	case *ssa.Next:
-		return v.Iter == val
-	case *ssa.Panic:
-		return v.X == val
-	case *ssa.Phi:
-		for _, e := range v.Edges {
-			if e == val {
-				return true
-			}
-		}
-	case *ssa.Range:
-		return v.X == val
-	case *ssa.Return:
-		for _, r := range v.Results {
-			if r == val {
-				return true
-			}
-		}
-	case *ssa.Select:
-		for _, state := range v.States {
-			if state.Chan == val || state.Send == val {
-				return true
-			}
-		}
-	case *ssa.Send:
-		return v.X == val || v.Chan == val
-	case *ssa.Slice:
-		return v.X == val || v.Low == val || v.High == val || v.Max == val
-	case *ssa.SliceToArrayPointer:
-		return v.X == val
-	case *ssa.Store:
-		return v.Addr == val || v.Val == val
-	case *ssa.TypeAssert:
-		return v.X == val
-	case *ssa.UnOp:
-		return v.X == val
-	}
-	return false
-}
-
 func findUsingInstruction(after ssa.Instruction, val ssa.Value) ssa.Instruction {
 	// Search inside current block first, then in subsequent blocks.
+	var buf [10]*ssa.Value
 	currBlock := after.Block()
 	var search bool
 	for _, instr := range currBlock.Instrs {
@@ -361,15 +280,19 @@ func findUsingInstruction(after ssa.Instruction, val ssa.Value) ssa.Instruction 
 				continue
 			}
 		}
-		if usesVal(instr, val) {
-			return instr
+		for _, op := range instr.Operands(buf[:0]) {
+			if *op == val {
+				return instr
+			}
 		}
 	}
 	blocks := currBlock.Parent().Blocks
 	for i := currBlock.Index + 1; i < len(blocks); i++ {
 		for _, instr := range blocks[i].Instrs {
-			if usesVal(instr, val) {
-				return instr
+			for _, op := range instr.Operands(buf[:0]) {
+				if *op == val {
+					return instr
+				}
 			}
 		}
 	}

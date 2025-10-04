@@ -32,7 +32,7 @@ func PrintInstr(pass *analysis.Pass, i ssa.Instruction, comment ...any) {
 	if v, ok := i.(ssa.Value); ok {
 		Reportf(pass, i.Pos(), "%T: %s() %s = %s%s", i, i.Parent(), v.Name(), i, comstr)
 	} else {
-		Reportf(pass, i.Pos(), "%T: %s() %s%s", i, i.Parent(), i.String(), comstr)
+		Reportf(pass, i.Pos(), "%T: %s() %s%s", i, i.Parent(), i, comstr)
 	}
 }
 

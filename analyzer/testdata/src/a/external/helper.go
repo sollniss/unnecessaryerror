@@ -34,3 +34,7 @@ type FuncAssignedToExternalStructField1 struct {
 type FuncAssignedToExternalStructField2 struct {
 	Func func() error
 }
+
+type MethodAssignedToExternalStructField struct {
+	Func func() error
+}

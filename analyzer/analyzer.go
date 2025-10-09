@@ -90,6 +90,14 @@ func run(pass *analysis.Pass) (interface{}, error) {
 			for _, f := range ssaInput.SrcFuncs {
 				for _, b := range f.Blocks {
 					for _, instr := range b.Instrs {
+						// Check if the function (or rather method) is converted to a bound closure.
+						if closure, ok := instr.(*ssa.MakeClosure); ok {
+							if fnObj := closure.Fn.(*ssa.Function).Object(); fnObj != nil && fnObj == containingFn.Object() {
+								if isUsed(instr) {
+									return true
+								}
+							}
+						}
 						for _, op := range instr.Operands(buf[:0]) {
 							if *op == containingFn {
 								if isUsed(instr) {

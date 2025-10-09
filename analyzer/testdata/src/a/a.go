@@ -502,3 +502,25 @@ func FuncAssignedToExternalStructField2() {
 	}
 	_ = s
 }
+
+type _methodAssignedToExternalStructField struct{}
+
+func (s _methodAssignedToExternalStructField) methodAssignedToExternalStructField() error {
+	return errors.New("")
+}
+
+func (s _methodAssignedToExternalStructField) methodAssignedToExternalStructField1() error {
+	err := s.methodAssignedToExternalStructField()
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func Test() {
+	var x _methodAssignedToExternalStructField
+	s := external.MethodAssignedToExternalStructField{
+		Func: x.methodAssignedToExternalStructField1,
+	}
+	_ = s
+}

@@ -1,0 +1,25 @@
+version: "2"
+
+formatters:
+  enable:
+    - gofumpt # enforces a stricter format than 'gofmt', while being backwards compatible
+    - goimports # checks if the code and import statements are formatted according to the 'goimports' command
+  settings:
+    gofumpt:
+      extra-rules: true
+
+linters:
+  exclusions:
+    # Log a warning if an exclusion rule is unused.
+    # Default: false
+    warn-unused: true
+    # Predefined exclusion rules.
+    # Default: []
+    presets:
+      - std-error-handling
+      - common-false-positives
+    # Which file paths to exclude: they will be analyzed, but issues from them won't be reported.
+    # "/" will be replaced by the current OS file path separator to properly work on Windows.
+    # Default: []
+    paths:
+      - unnecessaryerror/testdata

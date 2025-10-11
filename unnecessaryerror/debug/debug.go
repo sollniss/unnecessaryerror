@@ -36,8 +36,8 @@ func PrintInstr(pass *analysis.Pass, i ssa.Instruction, comment ...any) {
 	}
 }
 
-// PrintSSA prints the SSA data including addresses iff [Enabled] is true.
-func PrintSSA(ssaInput *buildssa.SSA) {
+// DumpSSA prints the SSA data including addresses iff [Enabled] is true.
+func DumpSSA(ssaInput *buildssa.SSA) {
 	if !Enabled {
 		return
 	}

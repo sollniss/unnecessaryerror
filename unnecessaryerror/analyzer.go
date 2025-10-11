@@ -162,7 +162,6 @@ func run(pass *analysis.Pass) (interface{}, error) {
 				pass.Reportf(retValPos(fn, i), "error is only ever nil-checked; consider returning a bool instead")
 			}
 		}
-
 	}
 	return nil, nil
 }

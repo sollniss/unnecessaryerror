@@ -49,7 +49,6 @@ func DumpSSA(ssaInput *buildssa.SSA) {
 		for _, block := range fn.Blocks {
 			for _, instr := range block.Instrs {
 				fmt.Printf("%p | %+#v\n", instr, instr)
-
 			}
 		}
 	}

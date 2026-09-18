@@ -6,44 +6,28 @@ import (
 	"os"
 )
 
-func methodCalled() error {
-	return errors.New("")
-}
-
 func MethodCalled() string {
-	err := methodCalled()
+	err := func() error { return errors.New("") }()
 	return err.Error() // OK: method called.
 }
 
-func typeAssert() error {
-	return errors.New("")
-}
-
 func TypeAssert() {
-	err := typeAssert()
+	err := func() error { return errors.New("") }()
 	if _, ok := err.(*os.SyscallError); ok { // OK: type asserted.
 		return
 	}
 }
 
-func typeSwitch() error {
-	return errors.New("")
-}
-
 func TypeSwitch() {
-	err := typeSwitch()
+	err := func() error { return errors.New("") }()
 	switch err.(type) { // OK: type switch.
 	case *os.PathError:
 		return
 	}
 }
 
-func comparedToSentinel() error {
-	return errors.New("")
-}
-
 func ComparedToSentinel() {
-	err := comparedToSentinel()
+	err := func() error { return errors.New("") }()
 	if err == io.EOF { // OK: compared to a value other than nil.
 		return
 	}
@@ -51,49 +35,32 @@ func ComparedToSentinel() {
 
 var errSentinel = errors.New("")
 
-func switchedOnSentinel() error {
-	return errors.New("")
-}
-
 func SwitchedOnSentinel() {
-	switch switchedOnSentinel() {
+	switch func() error { return errors.New("") }() {
 	case errSentinel: // OK: compared to a value other than nil.
 		return
 	}
 }
 
-func comparedToOtherErr() error {
-	return errors.New("")
-}
-
 func ComparedToOtherErr(other error) {
-	if err := comparedToOtherErr(); err != nil && err != other { // OK: compared to a value other than nil.
+	err := func() error { return errors.New("") }()
+	if err != nil && err != other { // OK: compared to a value other than nil.
 		return
 	}
-}
-
-func errorsIs() error {
-	return errors.New("")
 }
 
 func ErrorsIs() {
-	if errors.Is(errorsIs(), io.EOF) { // OK: passed to external function.
+	err := func() error { return errors.New("") }()
+	if errors.Is(err, io.EOF) { // OK: passed to external function.
 		return
 	}
 }
 
-func panicked() error {
-	return errors.New("")
-}
-
 func Panicked() {
-	if err := panicked(); err != nil {
+	err := func() error { return errors.New("") }()
+	if err != nil {
 		panic(err) // OK: panicked.
 	}
-}
-
-func returnInStruct() error {
-	return errors.New("")
 }
 
 type _returnInStruct struct {
@@ -101,117 +68,73 @@ type _returnInStruct struct {
 }
 
 func ReturnInStruct() _returnInStruct {
-	err := returnInStruct()
+	err := func() error { return errors.New("") }()
 	if err != nil {
 		return _returnInStruct{err: err} // OK: returned from exported function.
 	}
 	return _returnInStruct{}
 }
 
-func structField() error {
-	return errors.New("")
-}
-
 func StructField() {
-	x := struct{ err error }{err: structField()} // OK: assigned to struct field.
+	err := func() error { return errors.New("") }()
+	x := struct{ err error }{err: err} // OK: assigned to struct field.
 	_ = x
-}
-
-func mapIndex() error {
-	return errors.New("")
 }
 
 func MapIndex() {
 	m := map[int]error{}
-	m[0] = mapIndex() // OK: inserted into map.
-}
-
-func mapKey() error {
-	return errors.New("")
+	m[0] = func() error { return errors.New("") }() // OK: inserted into map.
 }
 
 func MapKey(m map[error]bool) {
-	if m[mapKey()] { // OK: used as map key.
+	err := func() error { return errors.New("") }()
+	if m[err] { // OK: used as map key.
 		return
 	}
 }
 
-func sliceIndex() error {
-	return errors.New("")
-}
-
 func SliceIndex() {
 	s := make([]error, 1)
-	s[0] = sliceIndex() // OK: inserted into slice.
-}
-
-func appended() error {
-	return errors.New("")
+	s[0] = func() error { return errors.New("") }() // OK: inserted into slice.
 }
 
 func Appended(errs []error) []error {
-	return append(errs, appended()) // OK: passed to builtin function.
-}
-
-func sentOnChannel() error {
-	return errors.New("")
+	err := func() error { return errors.New("") }()
+	return append(errs, err) // OK: passed to builtin function.
 }
 
 func SentOnChannel(ch chan error) {
-	ch <- sentOnChannel() // OK: sent on channel.
-}
-
-func sentViaSelect() error {
-	return errors.New("")
+	ch <- func() error { return errors.New("") }() // OK: sent on channel.
 }
 
 func SentViaSelect(ch chan error) {
+	err := func() error { return errors.New("") }()
 	select {
-	case ch <- sentViaSelect(): // OK: sent on channel.
+	case ch <- err: // OK: sent on channel.
 	default:
 	}
 }
 
-func storedViaPointer() error {
-	return errors.New("")
-}
-
 func StoredViaPointer(dst *error) {
-	*dst = storedViaPointer() // OK: stored through a pointer of unknown origin.
+	*dst = func() error { return errors.New("") }() // OK: stored through a pointer of unknown origin.
 }
 
-func assignedToExportedGlobalVar1() error {
-	return errors.New("")
-}
-
-var AssignedToExportedGlobalVar1 = assignedToExportedGlobalVar1() // OK: assigned to global variable.
-
-func assignedToExportedGlobalVar2() error {
-	return errors.New("")
-}
+var AssignedToExportedGlobalVar1 = func() error { return errors.New("") }() // OK: assigned to global variable.
 
 var AssignedToExportedGlobalVar2_ error
 
 func AssignedToExportedGlobalVar2() {
-	AssignedToExportedGlobalVar2_ = assignedToExportedGlobalVar2() // OK: assigned to global variable.
+	AssignedToExportedGlobalVar2_ = func() error { return errors.New("") }() // OK: assigned to global variable.
 }
 
-func assignedToUnexportedGlobalVar() error {
-	return errors.New("")
-}
-
-var _assignedToUnexportedGlobalVar = assignedToUnexportedGlobalVar() // OK: assigned to global variable.
+var _assignedToUnexportedGlobalVar = func() error { return errors.New("") }() // OK: assigned to global variable.
 
 var shadowedGlobal error
-
-func shadowedGlobalVar() error { // want "error is only ever nil-checked; consider returning a bool instead"
-	return errors.New("")
-}
 
 func ShadowedGlobalVar() {
 	var shadowedGlobal error // Shadows the global of the same name.
 	func() {
-		shadowedGlobal = shadowedGlobalVar()
+		shadowedGlobal = func() error { return errors.New("") }() // want "error is only ever nil-checked; consider returning a bool instead"
 	}()
 	if shadowedGlobal != nil {
 		return
@@ -234,8 +157,4 @@ var _funcAssignedToGlobalMap = map[string]func() error{
 	"a": funcAssignedToGlobalMap_1, // OK: caller inserted into map.
 }
 
-func nilCheckedInGlobalInit() error { // want "error is only ever nil-checked; consider returning a bool instead"
-	return errors.New("")
-}
-
-var _nilCheckedInGlobalInit = nilCheckedInGlobalInit() == nil
+var _nilCheckedInGlobalInit = func() error { return errors.New("") }() == nil // want "error is only ever nil-checked; consider returning a bool instead"

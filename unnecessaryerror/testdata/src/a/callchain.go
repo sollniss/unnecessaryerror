@@ -86,44 +86,43 @@ func (r *callchain4Rec) Callchain4() error {
 	return nil
 }
 
-func loggedByLocal() error {
-	return errors.New("")
+func recursive() error { // want "error is only ever nil-checked; consider returning a bool instead"
+	if recursive() != nil {
+		return errors.New("")
+	}
+	return nil
 }
+
+func Recursive() {
+	if recursive() != nil {
+		return
+	}
+}
+
+// Errors passed as arguments to functions of the same package.
 
 func logErr(err error) {
 	log.Print(err)
 }
 
 func LoggedByLocal() {
-	logErr(loggedByLocal()) // OK: the parameter is passed to an external function.
-}
-
-func loggedByDeferredLocal() error {
-	return errors.New("")
+	err := func() error { return errors.New("") }()
+	logErr(err) // OK: the parameter is passed to an external function.
 }
 
 func LoggedByDeferredLocal() {
-	defer logErr(loggedByDeferredLocal()) // OK: the parameter is passed to an external function.
-}
-
-func loggedByGoLocal() error {
-	return errors.New("")
+	err := func() error { return errors.New("") }()
+	defer logErr(err) // OK: the parameter is passed to an external function.
 }
 
 func LoggedByGoLocal() {
-	go logErr(loggedByGoLocal()) // OK: the parameter is passed to an external function.
-}
-
-func loggedByDeferredExternal() error {
-	return errors.New("")
+	err := func() error { return errors.New("") }()
+	go logErr(err) // OK: the parameter is passed to an external function.
 }
 
 func LoggedByDeferredExternal() {
-	defer log.Print(loggedByDeferredExternal()) // OK: passed to external function.
-}
-
-func nilCheckedByLocal() error { // want "error is only ever nil-checked; consider returning a bool instead"
-	return errors.New("")
+	err := func() error { return errors.New("") }()
+	defer log.Print(err) // OK: passed to external function.
 }
 
 func isErr(err error) bool {
@@ -131,13 +130,10 @@ func isErr(err error) bool {
 }
 
 func NilCheckedByLocal() {
-	if isErr(nilCheckedByLocal()) {
+	err := func() error { return errors.New("") }() // want "error is only ever nil-checked; consider returning a bool instead"
+	if isErr(err) {
 		return
 	}
-}
-
-func ignoredByLocal() error { // want "error is only ever nil-checked; consider returning a bool instead"
-	return errors.New("")
 }
 
 func ignoreErr(error) error {
@@ -145,15 +141,9 @@ func ignoreErr(error) error {
 }
 
 func IgnoredByLocal() error {
-	return ignoredByLocal_1()
-}
-
-func ignoredByLocal_1() error {
-	return ignoreErr(ignoredByLocal()) // The parameter is never used, even though the result is returned.
-}
-
-func passedToStoringLocal() error {
-	return errors.New("")
+	err := func() error { return errors.New("") }() // want "error is only ever nil-checked; consider returning a bool instead"
+	// The parameter is never used, even though the result is returned.
+	return ignoreErr(err)
 }
 
 type errHolder struct {
@@ -165,11 +155,8 @@ func (h *errHolder) set(err error) {
 }
 
 func PassedToStoringLocal(h *errHolder) {
-	h.set(passedToStoringLocal()) // OK: the parameter is stored in a struct field.
-}
-
-func passedToVariadicLocal() error {
-	return errors.New("")
+	err := func() error { return errors.New("") }()
+	h.set(err) // OK: the parameter is stored in a struct field.
 }
 
 func nilCheckAll(errs ...error) bool {
@@ -182,20 +169,8 @@ func nilCheckAll(errs ...error) bool {
 }
 
 func PassedToVariadicLocal() {
-	if nilCheckAll(passedToVariadicLocal()) { // OK: variadic arguments are stored in a slice.
-		return
-	}
-}
-
-func recursive() error { // want "error is only ever nil-checked; consider returning a bool instead"
-	if recursive() != nil {
-		return errors.New("")
-	}
-	return nil
-}
-
-func Recursive() {
-	if recursive() != nil {
+	err := func() error { return errors.New("") }()
+	if nilCheckAll(err) { // OK: variadic arguments are stored in a slice.
 		return
 	}
 }

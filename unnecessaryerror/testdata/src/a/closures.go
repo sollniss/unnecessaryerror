@@ -12,12 +12,8 @@ func Closure() {
 	}
 }
 
-func nilCheckInDefer() error { // want "error is only ever nil-checked; consider returning a bool instead"
-	return errors.New("")
-}
-
 func NilCheckInDefer() {
-	err := nilCheckInDefer()
+	err := func() error { return errors.New("") }() // want "error is only ever nil-checked; consider returning a bool instead"
 	defer func() {
 		if err != nil {
 			return
@@ -25,46 +21,30 @@ func NilCheckInDefer() {
 	}()
 }
 
-func capturedByDefer() error {
-	return errors.New("")
-}
-
 func CapturedByDefer() {
-	err := capturedByDefer()
+	err := func() error { return errors.New("") }()
 	defer func() {
 		log.Print(err) // OK: passed to external function.
 	}()
 }
 
-func capturedByGo() error {
-	return errors.New("")
-}
-
 func CapturedByGo() {
-	err := capturedByGo()
+	err := func() error { return errors.New("") }()
 	go func() {
 		log.Print(err) // OK: passed to external function.
 	}()
 }
 
-func capturedByCalledClosure() error {
-	return errors.New("")
-}
-
 func CapturedByCalledClosure() {
-	err := capturedByCalledClosure()
+	err := func() error { return errors.New("") }()
 	f := func() {
 		log.Print(err) // OK: passed to external function.
 	}
 	f()
 }
 
-func capturedByUncalledClosure() error { // want "error is only ever nil-checked; consider returning a bool instead"
-	return errors.New("")
-}
-
 func CapturedByUncalledClosure() {
-	err := capturedByUncalledClosure()
+	err := func() error { return errors.New("") }() // want "error is only ever nil-checked; consider returning a bool instead"
 	f := func() {
 		if err != nil {
 			return
@@ -73,45 +53,36 @@ func CapturedByUncalledClosure() {
 	f()
 }
 
-func assignedInClosure() error {
-	return errors.New("")
-}
-
 func AssignedInClosure() {
 	var err error
 	func() {
-		err = assignedInClosure()
+		err = func() error { return errors.New("") }()
 	}()
 	log.Print(err) // OK: passed to external function.
-}
-
-func assignedInNestedClosure() error {
-	return errors.New("")
 }
 
 func AssignedInNestedClosure() {
 	var err error
 	func() {
 		func() {
-			err = assignedInNestedClosure()
+			err = func() error { return errors.New("") }()
 		}()
 	}()
 	log.Print(err) // OK: passed to external function.
 }
 
-func nilCheckedAfterClosureAssign() error { // want "error is only ever nil-checked; consider returning a bool instead"
-	return errors.New("")
-}
-
 func NilCheckedAfterClosureAssign() {
 	var err error
 	func() {
-		err = nilCheckedAfterClosureAssign()
+		err = func() error { return errors.New("") }() // want "error is only ever nil-checked; consider returning a bool instead"
 	}()
 	if err != nil {
 		return
 	}
 }
+
+// The cases below are about functions used as values, so they need named functions:
+// a closure that is passed around instead of called is not a candidate.
 
 func closurePassedToLocal() error {
 	return errors.New("")

@@ -51,7 +51,6 @@ func GenericError() {
 	if err := genericError[error](); err != nil { // OK: ignore generic return types.
 		return
 	}
-	return
 }
 
 func genericError2[T error]() T {
@@ -63,7 +62,6 @@ func GenericError2() {
 	if err := genericError2[error](); err != nil { // OK: ignore generic return types.
 		return
 	}
-	return
 }
 
 func calledFromGeneric() error {

@@ -4,6 +4,15 @@
 // one or more callers. A `want` comment marks functions that should be
 // reported; `OK:` comments explain why a function is not reported.
 //
+// A report is a property of the whole function, so cases cannot share the
+// function under test. Cases that only care about what happens to the
+// returned value define it inline as an immediately called closure:
+//
+//	err := func() error { return errors.New("") }() // followed by the want comment
+//
+// Cases about named functions, call chains, methods, generics or functions
+// used as values declare a named function instead.
+//
 // The cases are grouped by topic:
 //
 //   - basic.go: plain nil checks

@@ -7,23 +7,56 @@ import (
 	"a/external"
 )
 
-func passedToExternal() error {
-	return errors.New("")
-}
-
 func PassedToExternal() {
-	err := passedToExternal()
+	err := func() error { return errors.New("") }()
 	log.Print(err) // OK: passed to external function.
 }
 
-func passedToBuiltinFunc() error {
+func PassedToBuiltinFunc() {
+	err := func() error { return errors.New("") }()
+	println(err) // OK: passed to builtin function.
+}
+
+func AssignedInClosureToExternal() {
+	var err1 error
+	err2 := external.AssignedInClosure(func() error {
+		err1 = func() error { return errors.New("") }()
+		return errors.New("")
+	})
+	log.Print(err1, err2) // OK: passed to external function.
+}
+
+func AssignedToExternalGlobalVar() {
+	external.Var = func() error { return errors.New("") }() // OK: assigned to global variable.
+}
+
+func AssignedToExternalStructField1() {
+	s := external.AssignedToExternalStructField1{
+		Err: func() error { return errors.New("") }(), // OK: Assigned to struct field.
+	}
+	_ = s
+}
+
+func assignedToExternalStructField2() error {
 	return errors.New("")
 }
 
-func PassedToBuiltinFunc() {
-	err := passedToBuiltinFunc()
-	println(err) // OK: passed to builtin function.
+func assignedToExternalStructField2_1() error {
+	err := assignedToExternalStructField2()
+	if err != nil {
+		return err
+	}
+	return nil
 }
+
+func AssignedToExternalStructField2() {
+	s := external.AssignedToExternalStructField2{
+		Err: assignedToExternalStructField2_1(), // OK: Assigned to struct field.
+	}
+	_ = s
+}
+
+// Functions passed to or stored by other packages.
 
 func funcPassedToExternal_1() error {
 	return errors.New("")
@@ -52,57 +85,6 @@ func ClosurePassedToExternal() {
 		return closurePassedToExternal()
 	})
 	log.Print(err)
-}
-
-func assignedInClosureToExternal() error {
-	return errors.New("")
-}
-
-func AssignedInClosureToExternal() {
-	var err1 error
-	err2 := external.AssignedInClosure(func() error {
-		err1 = assignedInClosureToExternal()
-		return errors.New("")
-	})
-	log.Print(err1, err2) // OK: passed to external function.
-}
-
-func assignedToExternalGlobalVar() error {
-	return errors.New("")
-}
-
-func AssignedToExternalGlobalVar() {
-	external.Var = assignedToExternalGlobalVar() // OK: assigned to global variable.
-}
-
-func assignedToExternalStructField1() error {
-	return errors.New("")
-}
-
-func AssignedToExternalStructField1() {
-	s := external.AssignedToExternalStructField1{
-		Err: assignedToExternalStructField1(), // OK: Assigned to struct field.
-	}
-	_ = s
-}
-
-func assignedToExternalStructField2() error {
-	return errors.New("")
-}
-
-func assignedToExternalStructField2_1() error {
-	err := assignedToExternalStructField2()
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-func AssignedToExternalStructField2() {
-	s := external.AssignedToExternalStructField2{
-		Err: assignedToExternalStructField2_1(), // OK: Assigned to struct field.
-	}
-	_ = s
 }
 
 func funcAssignedToExternalStructField1() error {

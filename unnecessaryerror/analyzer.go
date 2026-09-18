@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"slices"
 	"strings"
 
 	"golang.org/x/tools/go/analysis"
@@ -19,7 +20,7 @@ var Analyzer = &analysis.Analyzer{
 	Requires: []*analysis.Analyzer{buildssa.Analyzer},
 }
 
-func run(pass *analysis.Pass) (interface{}, error) {
+func run(pass *analysis.Pass) (any, error) {
 	ssaInput := pass.ResultOf[buildssa.Analyzer].(*buildssa.SSA)
 
 	fnErrs := findReturnedErrors(ssaInput.SrcFuncs)
@@ -56,10 +57,8 @@ func run(pass *analysis.Pass) (interface{}, error) {
 			if refs == nil {
 				return false
 			}
-			for _, r := range *refs {
-				if isUsed(r) {
-					return true
-				}
+			if slices.ContainsFunc(*refs, isUsed) {
+				return true
 			}
 		case *ssa.Return:
 			containingFn := v.Parent()
@@ -78,10 +77,8 @@ func run(pass *analysis.Pass) (interface{}, error) {
 			// Find out if it is passed to an external function.
 			refs := containingFn.Referrers()
 			if refs != nil {
-				for _, r := range *refs {
-					if isUsed(r) {
-						return true
-					}
+				if slices.ContainsFunc(*refs, isUsed) {
+					return true
 				}
 			}
 			// Function is not called (inside the current package).
@@ -120,10 +117,8 @@ func run(pass *analysis.Pass) (interface{}, error) {
 			}
 			refs := v.Referrers()
 			if refs != nil {
-				for _, r := range *refs {
-					if isUsed(r) {
-						return true
-					}
+				if slices.ContainsFunc(*refs, isUsed) {
+					return true
 				}
 			}
 			use := findUsingInstruction(v, v.Addr)
@@ -138,10 +133,8 @@ func run(pass *analysis.Pass) (interface{}, error) {
 			if refs == nil {
 				return false
 			}
-			for _, r := range *refs {
-				if isUsed(r) {
-					return true
-				}
+			if slices.ContainsFunc(*refs, isUsed) {
+				return true
 			}
 		}
 		return false
@@ -306,8 +299,7 @@ func hasGenericReturns(fn *ssa.Function) bool {
 	}
 	sig := orig.Signature
 	results := sig.Results()
-	for i := 0; i < results.Len(); i++ {
-		res := results.At(i)
+	for res := range results.Variables() {
 		if _, ok := res.Type().(*types.TypeParam); ok {
 			return true
 		}

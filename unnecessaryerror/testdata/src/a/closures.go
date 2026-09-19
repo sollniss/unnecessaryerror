@@ -2,6 +2,7 @@ package a
 
 import (
 	"errors"
+	"fmt"
 	"log"
 )
 
@@ -107,7 +108,7 @@ func runAndNilCheck(fn func() error) bool {
 }
 
 func ClosurePassedToNilCheckingLocal() {
-	if runAndNilCheck(func() error {
+	if runAndNilCheck(func() error { // want "error is only ever nil-checked; consider returning a bool instead"
 		return closurePassedToNilCheckingLocal()
 	}) {
 		return
@@ -136,4 +137,51 @@ func FuncPassedToNilCheckingLocal() {
 	if funcPassedToNilCheckingLocal() != nil {
 		return
 	}
+}
+
+func wrappedInDefer() (err error) { // want "error is only ever nil-checked; consider returning a bool instead"
+	defer func() {
+		if err != nil {
+			err = fmt.Errorf("wrap: %w", err) // OK: passed to external function.
+		}
+	}()
+	err = func() error { return errors.New("") }()
+	return
+}
+
+func WrappedInDefer() {
+	if wrappedInDefer() != nil {
+		return
+	}
+}
+
+func nilCheckedInDeferNamedResult() (err error) { // want "error is only ever nil-checked; consider returning a bool instead"
+	defer func() {
+		if err != nil {
+			return
+		}
+	}()
+	err = func() error { return errors.New("") }() // want "error is only ever nil-checked; consider returning a bool instead"
+	return
+}
+
+func NilCheckedInDeferNamedResult() {
+	if nilCheckedInDeferNamedResult() != nil {
+		return
+	}
+}
+
+func DeferredClosureResultDiscarded() {
+	defer func() error {
+		return func() error { return errors.New("") }() // want "error is only ever nil-checked; consider returning a bool instead"
+	}()
+}
+
+func onlyDeferred() error { // Not a candidate: never called for its result.
+	return errors.New("")
+}
+
+func OnlyDeferred() {
+	defer onlyDeferred()
+	go onlyDeferred()
 }

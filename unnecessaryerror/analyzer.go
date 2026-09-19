@@ -10,6 +10,7 @@ import (
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/buildssa"
 	"golang.org/x/tools/go/ssa"
+	"golang.org/x/tools/go/types/typeutil"
 )
 
 // Analyzer that finds errors that are only ever nil-checked and could be replaced with a bool.
@@ -31,7 +32,7 @@ func run(pass *analysis.Pass) (any, error) {
 	if init := ssaInput.Pkg.Func("init"); init != nil {
 		funcs = append(slices.Clone(funcs), init)
 	}
-	idx := buildIndex(funcs)
+	idx := buildIndex(ssaInput.Pkg, funcs)
 	t := &tracker{
 		pkg:  ssaInput.Pkg,
 		idx:  idx,
@@ -39,12 +40,13 @@ func run(pass *analysis.Pass) (any, error) {
 	}
 
 	var diags []token.Pos
-	for fn, errIdxs := range findReturnedErrors(idx) {
+	for fn, results := range findCandidates(idx) {
 		if t.fnUsed(fn) {
 			continue // Passed around as a value; its results may be used anywhere.
 		}
-		for i, errs := range errIdxs {
-			if !slices.ContainsFunc(errs, t.valueUsed) {
+		for _, i := range errorResults(fn) {
+			// A result that is never extracted from the call is never used.
+			if !slices.ContainsFunc(results[i], t.valueUsed) {
 				diags = append(diags, retValPos(fn, i))
 			}
 		}
@@ -62,7 +64,8 @@ type index struct {
 	// funcs contains all functions with a body that are reachable from the
 	// source functions, including synthetic wrappers (thunks, bound method
 	// wrappers, generic instantiation wrappers) that the SSA builder emits
-	// for method expressions, method values and generic calls.
+	// for method expressions, method values and generic calls, as well as
+	// the methods of every instantiation of a generic type of the package.
 	funcs []*ssa.Function
 	// callers maps a function to all static calls to it.
 	callers map[*ssa.Function][]*ssa.Call
@@ -76,7 +79,7 @@ type index struct {
 	closures map[*ssa.Function][]*ssa.MakeClosure
 }
 
-func buildIndex(src []*ssa.Function) *index {
+func buildIndex(pkg *ssa.Package, src []*ssa.Function) *index {
 	idx := &index{
 		callers:  make(map[*ssa.Function][]*ssa.Call),
 		invokes:  make(map[string][]*ssa.Call),
@@ -85,6 +88,33 @@ func buildIndex(src []*ssa.Function) *index {
 	}
 	seen := make(map[*ssa.Function]bool)
 	work := slices.Clone(src)
+
+	// The methods of a generic type are only reachable through the wrappers
+	// of its instantiations, which the SSA builder creates on demand. Only
+	// their concrete signatures tell whether an interface call can dispatch
+	// to them, so the methods of every instantiation that appears in the
+	// package are added to the work list.
+	var seenTypes typeutil.Map
+	noteType := func(t types.Type) {
+		named := localInstance(t, pkg.Pkg)
+		if named == nil || seenTypes.At(named) != nil {
+			return
+		}
+		seenTypes.Set(named, true)
+		for _, T := range []types.Type{named, types.NewPointer(named)} {
+			mset := pkg.Prog.MethodSets.MethodSet(T)
+			for i := range mset.Len() {
+				sel := mset.At(i)
+				if ast.IsExported(sel.Obj().Name()) {
+					continue // Never a candidate.
+				}
+				if fn := pkg.Prog.MethodValue(sel); fn != nil {
+					work = append(work, fn)
+				}
+			}
+		}
+	}
+
 	var buf [10]*ssa.Value
 	for len(work) > 0 {
 		fn := work[len(work)-1]
@@ -97,6 +127,9 @@ func buildIndex(src []*ssa.Function) *index {
 
 		for _, block := range fn.Blocks {
 			for _, instr := range block.Instrs {
+				if v, ok := instr.(ssa.Value); ok {
+					noteType(v.Type())
+				}
 				var calleePos *ssa.Value
 				switch v := instr.(type) {
 				case ssa.CallInstruction:
@@ -120,9 +153,10 @@ func buildIndex(src []*ssa.Function) *index {
 					work = append(work, closure)
 				}
 				for _, op := range instr.Operands(buf[:0]) {
-					if op == calleePos {
+					if op == calleePos || *op == nil {
 						continue
 					}
+					noteType((*op).Type())
 					if f, ok := (*op).(*ssa.Function); ok {
 						key := origin(f)
 						idx.fnUses[key] = append(idx.fnUses[key], fnUse{f, instr})
@@ -149,6 +183,20 @@ func origin(fn *ssa.Function) *ssa.Function {
 		return orig
 	}
 	return fn
+}
+
+// localInstance returns the instantiated generic type declared in pkg that
+// t is or points to, or nil if there is none.
+func localInstance(t types.Type, pkg *types.Package) *types.Named {
+	t = types.Unalias(t)
+	if ptr, ok := t.(*types.Pointer); ok {
+		t = types.Unalias(ptr.Elem())
+	}
+	named, ok := t.(*types.Named)
+	if !ok || named.TypeArgs().Len() == 0 || named.Obj().Pkg() != pkg || types.IsInterface(named) {
+		return nil
+	}
+	return named
 }
 
 // node is a value together with one of its referrers.
@@ -314,7 +362,8 @@ func (t *tracker) returnUses(val ssa.Value, instr *ssa.Return) bool {
 		}
 	}
 	if recv := fn.Signature.Recv(); recv != nil {
-		for _, call := range t.idx.invokes[fn.Name()] {
+		// Instantiations are named after their origin plus type arguments.
+		for _, call := range t.idx.invokes[origin(fn).Name()] {
 			if !implementedBy(call.Common(), fn) {
 				continue
 			}
@@ -395,52 +444,57 @@ func isNilCheck(op *ssa.BinOp) bool {
 	return isNil(op.X) || isNil(op.Y)
 }
 
+// isNil reports whether v is the nil constant. The zero value of a type
+// parameter counts too, since it is nil once instantiated with error.
 func isNil(v ssa.Value) bool {
 	c, ok := v.(*ssa.Const)
-	return ok && c.IsNil()
+	return ok && c.Value == nil
 }
 
-// findReturnedErrors finds all unexported functions that return an error,
-// mapped to the returned errors by result index.
-func findReturnedErrors(idx *index) map[*ssa.Function]map[int][]ssa.Value {
-	errs := make(map[*ssa.Function]map[int][]ssa.Value)
-	add := func(fn *ssa.Function, call *ssa.Call) {
-		rets := returnErrs(call)
-		if len(rets) == 0 {
-			return
+// findCandidates finds all unexported functions returning an error that are
+// called or used as a value, mapped to the error values their calls produce,
+// by result index. A result that is discarded at a call site has no value.
+func findCandidates(idx *index) map[*ssa.Function]map[int][]ssa.Value {
+	candidates := make(map[*ssa.Function]map[int][]ssa.Value)
+	add := func(fn *ssa.Function, calls ...*ssa.Call) {
+		results, ok := candidates[fn]
+		if !ok {
+			results = make(map[int][]ssa.Value)
+			candidates[fn] = results
 		}
-		if _, ok := errs[fn]; !ok {
-			errs[fn] = make(map[int][]ssa.Value)
-		}
-		for i, v := range rets {
-			errs[fn][i] = append(errs[fn][i], v)
-		}
-	}
-	for _, f := range idx.funcs {
-		for _, block := range f.Blocks {
-			for _, instr := range block.Instrs {
-				call, ok := instr.(*ssa.Call)
-				if !ok {
-					continue
-				}
-				if fn := reportedFunc(call.Call.StaticCallee()); fn != nil {
-					add(fn, call)
-				}
+		for _, call := range calls {
+			for i, v := range returnErrs(call) {
+				results[i] = append(results[i], v)
 			}
 		}
 	}
-	// Methods may also be called through an interface.
-	for fn := range errs {
-		if fn.Signature.Recv() == nil {
+	for callee, calls := range idx.callers {
+		if fn := reportedFunc(callee); fn != nil {
+			add(fn, calls...)
+		}
+	}
+	// Functions only used as values, e.g. passed to another function that calls them.
+	for f := range idx.fnUses {
+		if fn := reportedFunc(f); fn != nil {
+			add(fn)
+		}
+	}
+	// Methods may also be called through an interface. Whether a call can
+	// dispatch to a method of a generic type depends on the instantiation,
+	// so the check is done against the wrappers of the instantiations, not
+	// against the origin.
+	for _, f := range idx.funcs {
+		fn := reportedFunc(f)
+		if fn == nil || f.Signature.Recv() == nil {
 			continue
 		}
 		for _, call := range idx.invokes[fn.Name()] {
-			if implementedBy(call.Common(), fn) {
+			if implementedBy(call.Common(), f) {
 				add(fn, call)
 			}
 		}
 	}
-	return errs
+	return candidates
 }
 
 // reportedFunc returns the source function that a diagnostic about fn
@@ -455,10 +509,23 @@ func reportedFunc(fn *ssa.Function) *ssa.Function {
 	if fn.Synthetic != "" {
 		return nil // Wrapper; the wrapped function is reported instead.
 	}
-	if hasGenericReturns(fn) {
+	// A generic result is not an error, even if instantiated with one.
+	if len(errorResults(fn)) == 0 {
 		return nil
 	}
 	return fn
+}
+
+// errorResults returns the indices of fn's results of type error.
+func errorResults(fn *ssa.Function) []int {
+	var idxs []int
+	results := fn.Signature.Results()
+	for i := range results.Len() {
+		if types.Identical(results.At(i).Type(), errType) {
+			idxs = append(idxs, i)
+		}
+	}
+	return idxs
 }
 
 var errType = types.Universe.Lookup("error").Type()
@@ -497,18 +564,6 @@ func isUnexportedFunc(fn *ssa.Function) bool {
 		return true // Treat closures the same as unexported functions.
 	}
 	return !ast.IsExported(name)
-}
-
-// hasGenericReturns returns true if fn has generic return values, i.e.
-//
-//	func[T any]() T
-func hasGenericReturns(fn *ssa.Function) bool {
-	for res := range fn.Signature.Results().Variables() {
-		if _, ok := res.Type().(*types.TypeParam); ok {
-			return true
-		}
-	}
-	return false
 }
 
 // retValPos returns the position of the nth return value of fn.

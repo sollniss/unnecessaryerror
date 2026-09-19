@@ -174,3 +174,96 @@ func PassedToVariadicLocal() {
 		return
 	}
 }
+
+func PassedToFuncParam(cb func(error)) {
+	cb(func() error { return errors.New("") }()) // OK: passed to a function value.
+}
+
+type onErr struct{ cb func(error) }
+
+func PassedToFuncField(o onErr) {
+	o.cb(func() error { return errors.New("") }()) // OK: passed to a function value.
+}
+
+type errLogger interface{ logErr(error) }
+
+func PassedToInterfaceMethod(l errLogger) {
+	l.logErr(func() error { return errors.New("") }()) // OK: passed to an interface method.
+}
+
+func PassedToDeferredClosureArg() {
+	defer func(e error) {
+		log.Print(e) // OK: passed to external function.
+	}(func() error { return errors.New("") }())
+}
+
+func PassedToGoClosureArg() {
+	go func(e error) {
+		log.Print(e) // OK: passed to external function.
+	}(func() error { return errors.New("") }())
+}
+
+func PassedToDeferredClosureArgNilChecked() {
+	defer func(e error) {
+		if e != nil {
+			return
+		}
+	}(func() error { return errors.New("") }()) // want "error is only ever nil-checked; consider returning a bool instead"
+}
+
+func logAny(v any) {
+	log.Print(v)
+}
+
+func PassedAsAnyToLocal() {
+	logAny(func() error { return errors.New("") }()) // OK: the parameter is passed to an external function.
+}
+
+func nilCheckAny(v any) bool {
+	return v != nil
+}
+
+func PassedAsAnyToNilCheckingLocal() {
+	if nilCheckAny(func() error { return errors.New("") }()) { // want "error is only ever nil-checked; consider returning a bool instead"
+		return
+	}
+}
+
+func logGeneric[T any](v T) {
+	log.Print(v)
+}
+
+func PassedToGenericLocal() {
+	logGeneric(func() error { return errors.New("") }()) // OK: the parameter is passed to an external function.
+}
+
+func nilCheckGeneric[T any](v T) bool {
+	return any(v) != nil
+}
+
+func PassedToGenericNilCheckingLocal() {
+	if nilCheckGeneric(func() error { return errors.New("") }()) { // want "error is only ever nil-checked; consider returning a bool instead"
+		return
+	}
+}
+
+func zeroCheckGeneric[T comparable](v T) bool {
+	var zero T
+	return v != zero
+}
+
+func PassedToGenericZeroCheckingLocal() {
+	if zeroCheckGeneric(func() error { return errors.New("") }()) { // want "error is only ever nil-checked; consider returning a bool instead"
+		return
+	}
+}
+
+func unwrapLocal(err error) error { // want "error is only ever nil-checked; consider returning a bool instead"
+	return errors.Unwrap(err) // OK: passed to external function.
+}
+
+func PassedToUnwrappingLocal() {
+	if unwrapLocal(func() error { return errors.New("") }()) != nil {
+		return
+	}
+}

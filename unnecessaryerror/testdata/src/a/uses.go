@@ -2,7 +2,9 @@ package a
 
 import (
 	"errors"
+	"fmt"
 	"io"
+	"log"
 	"os"
 )
 
@@ -158,3 +160,179 @@ var _funcAssignedToGlobalMap = map[string]func() error{
 }
 
 var _nilCheckedInGlobalInit = func() error { return errors.New("") }() == nil // want "error is only ever nil-checked; consider returning a bool instead"
+
+func WrappedWithErrorf() error {
+	err := func() error { return errors.New("") }()
+	return fmt.Errorf("wrap: %w", err) // OK: passed to external function.
+}
+
+func Phi(cond bool) {
+	var err error
+	if cond {
+		err = func() error { return errors.New("") }()
+	} else {
+		err = func() error { return errors.New("") }()
+	}
+	log.Print(err) // OK: passed to external function.
+}
+
+func PhiNilChecked(cond bool) {
+	var err error
+	if cond {
+		err = func() error { return errors.New("") }() // want "error is only ever nil-checked; consider returning a bool instead"
+	} else {
+		err = func() error { return errors.New("") }() // want "error is only ever nil-checked; consider returning a bool instead"
+	}
+	if err != nil {
+		return
+	}
+}
+
+func PhiInLoop() {
+	var err error
+	for i := 0; i < 3; i++ {
+		err = func() error { return errors.New("") }()
+		if err == nil {
+			break
+		}
+	}
+	log.Print(err) // OK: passed to external function.
+}
+
+func ForInit() {
+	for err := func() error { return errors.New("") }(); err != nil; err = nil { // want "error is only ever nil-checked; consider returning a bool instead"
+		return
+	}
+}
+
+func LoadedThroughPointer() {
+	err := func() error { return errors.New("") }()
+	p := &err
+	log.Print(*p) // OK: passed to external function.
+}
+
+func LoadedThroughPointerNilChecked() {
+	err := func() error { return errors.New("") }() // want "error is only ever nil-checked; consider returning a bool instead"
+	p := &err
+	if *p != nil {
+		return
+	}
+}
+
+func AddressPassedToExternal() {
+	err := func() error { return errors.New("") }()
+	log.Print(&err) // OK: address passed to external function.
+}
+
+type errAlias = error
+
+func aliasReturn() errAlias { // want "error is only ever nil-checked; consider returning a bool instead"
+	return errors.New("")
+}
+
+func AliasReturn() {
+	if aliasReturn() != nil {
+		return
+	}
+}
+
+type namedErrIface interface{ Error() string }
+
+func namedIfaceReturn() namedErrIface { // Not an error: not tracked.
+	return errors.New("")
+}
+
+func NamedIfaceReturn() {
+	if namedIfaceReturn() != nil {
+		return
+	}
+}
+
+type convertedErr error
+
+func ConvertedToNamedType() {
+	err := convertedErr(func() error { return errors.New("") }())
+	log.Print(err) // OK: passed to external function.
+}
+
+func ConvertedToNamedTypeNilChecked() {
+	err := convertedErr(func() error { return errors.New("") }()) // want "error is only ever nil-checked; consider returning a bool instead"
+	if err != nil {
+		return
+	}
+}
+
+func SwitchNilAndSentinel() {
+	switch func() error { return errors.New("") }() {
+	case nil:
+	case io.EOF: // OK: compared to a value other than nil.
+	}
+}
+
+func SwitchNilOnly() {
+	switch func() error { return errors.New("") }() { // want "error is only ever nil-checked; consider returning a bool instead"
+	case nil:
+	default:
+	}
+}
+
+func MapKeyCommaOk(m map[error]bool) {
+	err := func() error { return errors.New("") }()
+	if _, ok := m[err]; ok { // OK: used as map key.
+		return
+	}
+}
+
+func MapUpdateKey(m map[error]bool) {
+	m[func() error { return errors.New("") }()] = true // OK: used as map key.
+}
+
+func ArrayElement() {
+	var arr [1]error
+	arr[0] = func() error { return errors.New("") }() // OK: inserted into array.
+}
+
+func ArrayLiteral() {
+	arr := [...]error{func() error { return errors.New("") }()} // OK: inserted into array.
+	_ = arr
+}
+
+func StructInChannel(ch chan struct{ err error }) {
+	ch <- struct{ err error }{err: func() error { return errors.New("") }()} // OK: assigned to struct field.
+}
+
+func MethodValueOfError() {
+	err := func() error { return errors.New("") }()
+	f := err.Error // OK: method value.
+	_ = f
+}
+
+func MethodExprOnError() string {
+	err := func() error { return errors.New("") }()
+	return error.Error(err) // OK: method called via method expression.
+}
+
+func TypeAssertToAnonInterface() {
+	err := func() error { return errors.New("") }()
+	if _, ok := err.(interface{ Timeout() bool }); ok { // OK: type asserted.
+		return
+	}
+}
+
+func ComparedToEachOther() {
+	a := func() error { return errors.New("") }()
+	b := func() error { return errors.New("") }()
+	if a == b { // OK: compared to a value other than nil.
+		return
+	}
+}
+
+func nilCheckedInInit() error { // want "error is only ever nil-checked; consider returning a bool instead"
+	return errors.New("")
+}
+
+func init() {
+	if nilCheckedInInit() != nil {
+		return
+	}
+}

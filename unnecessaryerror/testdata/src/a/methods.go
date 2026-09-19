@@ -208,3 +208,87 @@ func MethodExprNilChecked() {
 		return
 	}
 }
+
+type embeddedIface interface{ embeddedIface() error }
+
+type outerIface interface {
+	embeddedIface
+}
+
+type _embeddedIface struct{}
+
+func (_embeddedIface) embeddedIface() error {
+	return errors.New("")
+}
+
+func EmbeddedIface(o outerIface) {
+	log.Print(o.embeddedIface()) // OK: passed to external function via embedded interface method.
+	if (_embeddedIface{}).embeddedIface() != nil {
+		return
+	}
+}
+
+type _anonIface struct{}
+
+func (_anonIface) anonIface() error {
+	return errors.New("")
+}
+
+func AnonIface(v any) {
+	log.Print(v.(interface{ anonIface() error }).anonIface()) // OK: passed to external function via anonymous interface.
+	if (_anonIface{}).anonIface() != nil {
+		return
+	}
+}
+
+type twoImpls interface{ twoImpls() error }
+
+type _twoImpls1 struct{}
+
+func (_twoImpls1) twoImpls() error { // Conservative: either implementation may be the dynamic target.
+	return errors.New("")
+}
+
+type _twoImpls2 struct{}
+
+func (_twoImpls2) twoImpls() error {
+	return errors.New("")
+}
+
+func TwoImpls(t twoImpls) {
+	log.Print(t.twoImpls())
+	if (_twoImpls1{}).twoImpls() != nil {
+		return
+	}
+	if (_twoImpls2{}).twoImpls() != nil {
+		return
+	}
+}
+
+type genericGetter interface{ get() error }
+
+type genericImpl[T any] struct{}
+
+func (*genericImpl[T]) get() error {
+	return errors.New("")
+}
+
+func GenericImpl() {
+	var g genericGetter = &genericImpl[int]{}
+	log.Print(g.get()) // OK: passed to external function via interface.
+	if (&genericImpl[string]{}).get() != nil {
+		return
+	}
+}
+
+type unexportedType struct{}
+
+func (unexportedType) Exported() error { // Not a candidate: exported method name.
+	return errors.New("")
+}
+
+func UnexportedType() {
+	if (unexportedType{}).Exported() != nil {
+		return
+	}
+}

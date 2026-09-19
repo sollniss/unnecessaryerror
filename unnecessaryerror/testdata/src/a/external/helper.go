@@ -38,3 +38,5 @@ type FuncAssignedToExternalStructField2 struct {
 type MethodAssignedToExternalStructField struct {
 	Func func() error
 }
+
+var Var error

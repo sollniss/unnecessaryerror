@@ -30,3 +30,9 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# devenv / direnv
+.devenv/
+.devenv.flake.nix
+devenv.local.nix
+.direnv/

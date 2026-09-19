@@ -17,7 +17,7 @@ func Bar() {
 }
 ```
 
-For more examples, refer to the [testdata](https://github.com/sollniss/unnecessaryerror/blob/main/analyzer/testdata/src/a/a.go) directory.
+For more examples, refer to the [testdata](https://github.com/sollniss/unnecessaryerror/tree/main/unnecessaryerror/testdata/src/a) directory.
 
 Run with
 ```sh

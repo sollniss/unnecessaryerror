@@ -4,11 +4,13 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"slices"
 	"strings"
 
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/buildssa"
 	"golang.org/x/tools/go/ssa"
+	"golang.org/x/tools/go/types/typeutil"
 )
 
 // Analyzer that finds errors that are only ever nil-checked and could be replaced with a bool.
@@ -19,189 +21,526 @@ var Analyzer = &analysis.Analyzer{
 	Requires: []*analysis.Analyzer{buildssa.Analyzer},
 }
 
-func run(pass *analysis.Pass) (interface{}, error) {
+const msg = "error is only ever nil-checked; consider returning a bool instead"
+
+func run(pass *analysis.Pass) (any, error) {
 	ssaInput := pass.ResultOf[buildssa.Analyzer].(*buildssa.SSA)
 
-	fnErrs := findReturnedErrors(ssaInput.SrcFuncs)
-	checking := make(map[ssa.Instruction]struct{})
-	seen := make(map[ssa.Instruction]bool)
-
-	var isUsed func(instr ssa.Instruction) bool
-	isUsed = func(instr ssa.Instruction) (result bool) {
-		if v, ok := seen[instr]; ok {
-			return v
-		}
-		if _, ok := checking[instr]; ok {
-			return false
-		}
-		checking[instr] = struct{}{}
-		// TODO: There must be a better way than this.
-		defer func() {
-			seen[instr] = result
-			delete(checking, instr)
-		}()
-
-		switch v := instr.(type) {
-		case *ssa.FieldAddr, *ssa.IndexAddr, *ssa.MapUpdate, *ssa.Send, *ssa.TypeAssert:
-			return true
-		case *ssa.Call:
-			callee := v.Call.StaticCallee()
-			if callee == nil {
-				return true // Method call.
-			}
-			if callee.Pkg != nil && callee.Pkg != v.Parent().Pkg {
-				return true // Call to external function.
-			}
-			refs := v.Referrers()
-			if refs == nil {
-				return false
-			}
-			for _, r := range *refs {
-				if isUsed(r) {
-					return true
-				}
-			}
-		case *ssa.Return:
-			containingFn := v.Parent()
-			if !isUnexportedFunc(containingFn) {
-				return true
-			}
-			callers := findCaller(ssaInput.SrcFuncs, containingFn)
-			for _, caller := range callers {
-				if isUsed(caller) {
-					return true
-				}
-			}
-			// There are no callers in the current package.
-
-			// Function containing the return might be called externally.
-			// Find out if it is passed to an external function.
-			refs := containingFn.Referrers()
-			if refs != nil {
-				for _, r := range *refs {
-					if isUsed(r) {
-						return true
-					}
-				}
-			}
-			// Function is not called (inside the current package).
-			// See if it is assigned somewhere.
-			var buf [10]*ssa.Value
-			for _, f := range ssaInput.SrcFuncs {
-				for _, b := range f.Blocks {
-					for _, instr := range b.Instrs {
-						// Check if the function (or rather method) is converted to a bound closure.
-						if closure, ok := instr.(*ssa.MakeClosure); ok {
-							if fnObj := closure.Fn.(*ssa.Function).Object(); fnObj != nil && fnObj == containingFn.Object() {
-								if isUsed(instr) {
-									return true
-								}
-							}
-						}
-						for _, op := range instr.Operands(buf[:0]) {
-							if *op == containingFn {
-								if isUsed(instr) {
-									return true
-								}
-							}
-						}
-					}
-				}
-			}
-		case *ssa.Store:
-			obj := pass.Pkg.Scope().Lookup(v.Addr.Name())
-			if obj != nil {
-				return true // Object that was assigned to is global.
-			}
-			if addr, ok := v.Addr.(ssa.Instruction); ok {
-				if isUsed(addr) {
-					return true
-				}
-			}
-			refs := v.Referrers()
-			if refs != nil {
-				for _, r := range *refs {
-					if isUsed(r) {
-						return true
-					}
-				}
-			}
-			use := findUsingInstruction(v, v.Addr)
-			if use != nil {
-				return isUsed(use)
-			}
-		case interface {
-			Referrers() *[]ssa.Instruction
-			Name() string
-		}:
-			refs := v.Referrers()
-			if refs == nil {
-				return false
-			}
-			for _, r := range *refs {
-				if isUsed(r) {
-					return true
-				}
-			}
-		}
-		return false
+	funcs := ssaInput.SrcFuncs
+	// Package-level variable initializers live in the synthetic package
+	// initializer, which is not among the source functions.
+	if init := ssaInput.Pkg.Func("init"); init != nil {
+		funcs = append(slices.Clone(funcs), init)
 	}
-	for fn, errIdxs := range fnErrs {
-		for i, errs := range errIdxs {
-			var used bool
-		errIdxLoop:
-			for _, err := range errs {
-				for _, ref := range *err.Referrers() {
-					if isUsed(ref) {
-						used = true
-						break errIdxLoop
-					}
-				}
-			}
-			if !used {
-				pass.Reportf(retValPos(fn, i), "error is only ever nil-checked; consider returning a bool instead")
+	idx := buildIndex(ssaInput.Pkg, funcs)
+	t := &tracker{
+		pkg:  ssaInput.Pkg,
+		idx:  idx,
+		memo: make(map[node]bool),
+	}
+
+	var diags []token.Pos
+	for fn, results := range findCandidates(idx) {
+		if t.fnUsed(fn) {
+			continue // Passed around as a value; its results may be used anywhere.
+		}
+		for _, i := range errorResults(fn) {
+			// A result that is never extracted from the call is never used.
+			if !slices.ContainsFunc(results[i], t.valueUsed) {
+				diags = append(diags, retValPos(fn, i))
 			}
 		}
+	}
+	// Map iteration order is random; report in source order.
+	slices.Sort(diags)
+	for _, pos := range diags {
+		pass.Reportf(pos, msg)
 	}
 	return nil, nil
 }
 
-// findReturnedErrors finds all unexported functions that return an error.
-func findReturnedErrors(funcs []*ssa.Function) map[*ssa.Function]map[int][]ssa.Value {
-	errs := make(map[*ssa.Function]map[int][]ssa.Value)
-	for _, f := range funcs {
-		for _, block := range f.Blocks {
-			for _, instr := range block.Instrs {
-				call, ok := instr.(*ssa.Call)
-				if !ok {
-					continue
+// index holds package-wide lookup tables built once per package.
+type index struct {
+	// funcs contains all functions with a body that are reachable from the
+	// source functions, including synthetic wrappers (thunks, bound method
+	// wrappers, generic instantiation wrappers) that the SSA builder emits
+	// for method expressions, method values and generic calls, as well as
+	// the methods of every instantiation of a generic type of the package.
+	funcs []*ssa.Function
+	// callers maps a function to all static calls to it.
+	callers map[*ssa.Function][]*ssa.Call
+	// invokes maps a method name to all dynamic (interface) calls of that name.
+	invokes map[string][]*ssa.Call
+	// fnUses maps a function to its uses as a value, i.e. anywhere but the
+	// callee position of a static call. Instantiations of generic functions
+	// are keyed by their origin.
+	fnUses map[*ssa.Function][]fnUse
+	// closures maps a function to the instructions that create closures from it.
+	closures map[*ssa.Function][]*ssa.MakeClosure
+}
+
+func buildIndex(pkg *ssa.Package, src []*ssa.Function) *index {
+	idx := &index{
+		callers:  make(map[*ssa.Function][]*ssa.Call),
+		invokes:  make(map[string][]*ssa.Call),
+		fnUses:   make(map[*ssa.Function][]fnUse),
+		closures: make(map[*ssa.Function][]*ssa.MakeClosure),
+	}
+	seen := make(map[*ssa.Function]bool)
+	work := slices.Clone(src)
+
+	// The methods of a generic type are only reachable through the wrappers
+	// of its instantiations, which the SSA builder creates on demand. Only
+	// their concrete signatures tell whether an interface call can dispatch
+	// to them, so the methods of every instantiation that appears in the
+	// package are added to the work list.
+	var seenTypes typeutil.Map
+	noteType := func(t types.Type) {
+		named := localInstance(t, pkg.Pkg)
+		if named == nil || seenTypes.At(named) != nil {
+			return
+		}
+		seenTypes.Set(named, true)
+		for _, T := range []types.Type{named, types.NewPointer(named)} {
+			for sel := range pkg.Prog.MethodSets.MethodSet(T).Methods() {
+				if ast.IsExported(sel.Obj().Name()) {
+					continue // Never a candidate.
 				}
-				fn := call.Call.StaticCallee()
-				if !isUnexportedFunc(fn) {
-					continue
-				}
-				if hasGenericReturns(fn) {
-					continue
-				}
-				rets := returnErrs(call)
-				if len(rets) == 0 {
-					continue
-				}
-				// Track only the origin of generic functions.
-				// Doing the check here allows us to capture generic errors too.
-				if orig := fn.Origin(); orig != nil {
-					fn = orig
-				}
-				if _, ok := errs[fn]; !ok {
-					errs[fn] = make(map[int][]ssa.Value)
-				}
-				for i, v := range rets {
-					errs[fn][i] = append(errs[fn][i], v)
+				if fn := pkg.Prog.MethodValue(sel); fn != nil {
+					work = append(work, fn)
 				}
 			}
 		}
 	}
-	return errs
+
+	var buf [10]*ssa.Value
+	for len(work) > 0 {
+		fn := work[len(work)-1]
+		work = work[:len(work)-1]
+		if seen[fn] || len(fn.Blocks) == 0 {
+			continue
+		}
+		seen[fn] = true
+		idx.funcs = append(idx.funcs, fn)
+
+		for _, block := range fn.Blocks {
+			for _, instr := range block.Instrs {
+				if v, ok := instr.(ssa.Value); ok {
+					noteType(v.Type())
+				}
+				var calleePos *ssa.Value
+				switch v := instr.(type) {
+				case ssa.CallInstruction:
+					common := v.Common()
+					calleePos = &common.Value
+					call, isCall := instr.(*ssa.Call)
+					if common.IsInvoke() {
+						if isCall {
+							name := common.Method.Name()
+							idx.invokes[name] = append(idx.invokes[name], call)
+						}
+					} else if callee := common.StaticCallee(); callee != nil {
+						if isCall {
+							idx.callers[callee] = append(idx.callers[callee], call)
+						}
+						work = append(work, callee)
+					}
+				case *ssa.MakeClosure:
+					closure := v.Fn.(*ssa.Function)
+					idx.closures[closure] = append(idx.closures[closure], v)
+					work = append(work, closure)
+				}
+				for _, op := range instr.Operands(buf[:0]) {
+					if op == calleePos || *op == nil {
+						continue
+					}
+					noteType((*op).Type())
+					if f, ok := (*op).(*ssa.Function); ok {
+						key := origin(f)
+						idx.fnUses[key] = append(idx.fnUses[key], fnUse{f, instr})
+						// Method expressions and instantiations used as values
+						// are wrappers whose bodies call the actual function.
+						work = append(work, f)
+					}
+				}
+			}
+		}
+	}
+	return idx
+}
+
+// fnUse is an instruction that uses fn as a value.
+type fnUse struct {
+	fn    *ssa.Function
+	instr ssa.Instruction
+}
+
+// origin returns the generic function fn was instantiated from, or fn itself.
+func origin(fn *ssa.Function) *ssa.Function {
+	if orig := fn.Origin(); orig != nil {
+		return orig
+	}
+	return fn
+}
+
+// isInstantiation reports whether fn is the synthetic wrapper the SSA builder
+// emits for an instantiation of a generic function, whose body calls the origin.
+func isInstantiation(fn *ssa.Function) bool {
+	return fn.Synthetic != "" && fn.Origin() != nil
+}
+
+// localInstance returns the instantiated generic type declared in pkg that
+// t is or points to, or nil if there is none.
+func localInstance(t types.Type, pkg *types.Package) *types.Named {
+	t = types.Unalias(t)
+	if ptr, ok := t.(*types.Pointer); ok {
+		t = types.Unalias(ptr.Elem())
+	}
+	named, ok := t.(*types.Named)
+	if !ok || named.TypeArgs().Len() == 0 || named.Obj().Pkg() != pkg || types.IsInterface(named) {
+		return nil
+	}
+	return named
+}
+
+// node is a value together with one of its referrers.
+type node struct {
+	val   ssa.Value
+	instr ssa.Instruction
+}
+
+// tracker follows values through the package to decide whether they are used
+// in any way other than a nil check.
+type tracker struct {
+	pkg *ssa.Package
+	idx *index
+	// memo caches results that hold independently of the query they were found in.
+	memo map[node]bool
+	// visited holds the nodes reached by the current query.
+	visited map[node]bool
+}
+
+// valueUsed reports whether val is used in some way other than a nil check.
+func (t *tracker) valueUsed(val ssa.Value) bool {
+	return t.query(func() bool { return t.refsUsed(val) })
+}
+
+// fnUsed reports whether fn is used as a value in a way that may use its results.
+func (t *tracker) fnUsed(fn *ssa.Function) bool {
+	return t.query(func() bool { return t.fnRefsUsed(fn) })
+}
+
+// fnRefsUsed reports whether any use of fn as a value is a use.
+func (t *tracker) fnRefsUsed(fn *ssa.Function) bool {
+	return slices.ContainsFunc(t.idx.fnUses[origin(fn)], func(use fnUse) bool {
+		return t.used(use.fn, use.instr)
+	})
+}
+
+// query runs search as a new query.
+func (t *tracker) query(search func() bool) bool {
+	t.visited = make(map[node]bool)
+	if search() {
+		return true
+	}
+	// Nothing reachable from the query is a use, so the same holds for every
+	// node visited on the way.
+	for n := range t.visited {
+		t.memo[n] = false
+	}
+	return false
+}
+
+// refsUsed reports whether any referrer of val uses it.
+func (t *tracker) refsUsed(val ssa.Value) bool {
+	refs := val.Referrers()
+	if refs == nil {
+		return false
+	}
+	return slices.ContainsFunc(*refs, func(instr ssa.Instruction) bool {
+		return t.used(val, instr)
+	})
+}
+
+// used reports whether instr uses val.
+func (t *tracker) used(val ssa.Value, instr ssa.Instruction) bool {
+	n := node{val, instr}
+	if r, ok := t.memo[n]; ok {
+		return r
+	}
+	if t.visited[n] {
+		return false // Cycle; the answer is determined by the node that started it.
+	}
+	t.visited[n] = true
+	if t.usedBy(val, instr) {
+		t.memo[n] = true // A use stays a use no matter where the query started.
+		return true
+	}
+	return false
+}
+
+func (t *tracker) usedBy(val ssa.Value, instr ssa.Instruction) bool {
+	switch v := instr.(type) {
+	case *ssa.If, *ssa.DebugRef:
+		return false
+	case *ssa.BinOp:
+		// Comparing against nil is the one thing we are looking for.
+		// Anything else, e.g. comparing against a sentinel error, is a use.
+		return !isNilCheck(v)
+	case ssa.CallInstruction:
+		return t.callUses(val, v)
+	case *ssa.Return:
+		return t.returnUses(val, v)
+	case *ssa.Store:
+		if v.Val == val {
+			return t.addrUsed(v.Addr)
+		}
+		return false // val is the address being overwritten.
+	case *ssa.MakeClosure:
+		if v.Fn == val {
+			return t.refsUsed(v)
+		}
+		closure := v.Fn.(*ssa.Function)
+		for i, b := range v.Bindings {
+			if b == val && t.refsUsed(closure.FreeVars[i]) {
+				return true
+			}
+		}
+		return false
+	case *ssa.Lookup:
+		if v.Index == val {
+			return true // Used as map key.
+		}
+		return t.refsUsed(v)
+	case *ssa.Phi, *ssa.Extract, *ssa.UnOp,
+		*ssa.MakeInterface, *ssa.ChangeInterface, *ssa.ChangeType, *ssa.Convert, *ssa.MultiConvert:
+		// val is passed through unchanged; follow the result.
+		return t.refsUsed(v.(ssa.Value))
+	default:
+		// Anything else (stored into a struct, slice, map or channel, panicked,
+		// type asserted, ...) is a use.
+		return true
+	}
+}
+
+// callUses reports whether the call instr uses val.
+func (t *tracker) callUses(val ssa.Value, instr ssa.CallInstruction) bool {
+	common := instr.Common()
+	if common.IsInvoke() {
+		// Either a method is called on val or val is passed to an unknown implementation.
+		return true
+	}
+	if common.Value == val {
+		// val itself is called; it is used if its result is.
+		if call, ok := instr.(*ssa.Call); ok {
+			return t.refsUsed(call)
+		}
+		return false // go and defer discard the result.
+	}
+	callee := common.StaticCallee()
+	if callee == nil || len(callee.Blocks) == 0 || (callee.Pkg != nil && callee.Pkg != t.pkg) {
+		return true // Passed to a builtin, a function value or an external function.
+	}
+	// Passed to a function of this package; follow the parameter inside it.
+	for i, arg := range common.Args {
+		if arg != val {
+			continue
+		}
+		if i >= len(callee.Params) || t.refsUsed(callee.Params[i]) {
+			return true
+		}
+	}
+	return false
+}
+
+// returnUses reports whether returning val from instr's function counts as a use.
+func (t *tracker) returnUses(val ssa.Value, instr *ssa.Return) bool {
+	fn := instr.Parent()
+	if !isUnexportedFunc(fn) {
+		return true // Could be used by other packages.
+	}
+	results := fn.Signature.Results()
+	for _, call := range t.idx.callers[fn] {
+		if t.resultUsed(val, instr, call, results) {
+			return true
+		}
+	}
+	if recv := fn.Signature.Recv(); recv != nil {
+		// Instantiations are named after their origin plus type arguments.
+		for _, call := range t.idx.invokes[origin(fn).Name()] {
+			if !implementedBy(call.Common(), fn) {
+				continue
+			}
+			if t.resultUsed(val, instr, call, results) {
+				return true
+			}
+		}
+	}
+	return t.fnRefsUsed(fn)
+}
+
+// resultUsed reports whether the result of call that corresponds to val in ret is used.
+func (t *tracker) resultUsed(val ssa.Value, ret *ssa.Return, call *ssa.Call, results *types.Tuple) bool {
+	if results.Len() == 1 {
+		return t.refsUsed(call)
+	}
+	for i, res := range ret.Results {
+		if res != val {
+			continue
+		}
+		for _, ref := range *call.Referrers() {
+			if extr, ok := ref.(*ssa.Extract); ok && extr.Index == i && t.refsUsed(extr) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// addrUsed reports whether a value stored at addr is used.
+func (t *tracker) addrUsed(addr ssa.Value) bool {
+	switch a := addr.(type) {
+	case *ssa.Alloc:
+		return t.refsUsed(a)
+	case *ssa.FreeVar:
+		if t.refsUsed(a) {
+			return true
+		}
+		// The variable is shared with the enclosing function.
+		closure := a.Parent()
+		i := slices.Index(closure.FreeVars, a)
+		for _, mc := range t.idx.closures[closure] {
+			if t.addrUsed(mc.Bindings[i]) {
+				return true
+			}
+		}
+		return false
+	default:
+		// Globals, fields, elements and pointers of unknown origin.
+		return true
+	}
+}
+
+// implementedBy reports whether the dynamic call could dispatch to the method fn.
+func implementedBy(call *ssa.CallCommon, fn *ssa.Function) bool {
+	if !types.Identical(call.Method.Type(), fn.Signature) {
+		return false
+	}
+	iface, ok := call.Value.Type().Underlying().(*types.Interface)
+	if !ok {
+		return false
+	}
+	recv := fn.Signature.Recv().Type()
+	if types.Implements(recv, iface) {
+		return true
+	}
+	if _, isPtr := recv.(*types.Pointer); !isPtr {
+		return types.Implements(types.NewPointer(recv), iface)
+	}
+	return false
+}
+
+// isNilCheck reports whether op compares against nil.
+func isNilCheck(op *ssa.BinOp) bool {
+	if op.Op != token.EQL && op.Op != token.NEQ {
+		return false
+	}
+	return isNil(op.X) || isNil(op.Y)
+}
+
+// isNil reports whether v is the nil constant. The zero value of a type
+// parameter counts too, since it is nil once instantiated with error.
+func isNil(v ssa.Value) bool {
+	c, ok := v.(*ssa.Const)
+	return ok && c.Value == nil
+}
+
+// findCandidates finds all unexported functions returning an error that are
+// called or used as a value, mapped to the error values their calls produce,
+// by result index. A result that is discarded at a call site has no value.
+func findCandidates(idx *index) map[*ssa.Function]map[int][]ssa.Value {
+	candidates := make(map[*ssa.Function]map[int][]ssa.Value)
+	add := func(fn *ssa.Function, calls ...*ssa.Call) {
+		results, ok := candidates[fn]
+		if !ok {
+			results = make(map[int][]ssa.Value)
+			candidates[fn] = results
+		}
+		for _, call := range calls {
+			for i, v := range returnErrs(call) {
+				results[i] = append(results[i], v)
+			}
+		}
+	}
+	for callee, calls := range idx.callers {
+		fn := reportedFunc(callee)
+		if fn == nil {
+			continue
+		}
+		// An instantiation wrapper only forwards to the generic body; the
+		// calls that matter are those to the wrapper itself, which are
+		// indexed under the wrapper. Without this, a generic function that
+		// is only deferred would be a candidate, unlike a plain one.
+		calls = slices.DeleteFunc(slices.Clone(calls), func(call *ssa.Call) bool {
+			return isInstantiation(call.Parent())
+		})
+		if len(calls) > 0 {
+			add(fn, calls...)
+		}
+	}
+	// Functions only used as values, e.g. passed to another function that calls them.
+	for f := range idx.fnUses {
+		if fn := reportedFunc(f); fn != nil {
+			add(fn)
+		}
+	}
+	// Methods may also be called through an interface. Whether a call can
+	// dispatch to a method of a generic type depends on the instantiation,
+	// so the check is done against the wrappers of the instantiations, not
+	// against the origin.
+	for _, f := range idx.funcs {
+		fn := reportedFunc(f)
+		if fn == nil || f.Signature.Recv() == nil {
+			continue
+		}
+		for _, call := range idx.invokes[fn.Name()] {
+			if implementedBy(call.Common(), f) {
+				add(fn, call)
+			}
+		}
+	}
+	return candidates
+}
+
+// reportedFunc returns the source function that a diagnostic about fn
+// should be attached to, or nil if fn is not a candidate.
+func reportedFunc(fn *ssa.Function) *ssa.Function {
+	if !isUnexportedFunc(fn) {
+		return nil
+	}
+	// Track generic functions by their origin, so that all
+	// instantiations count towards the same function.
+	fn = origin(fn)
+	if fn.Synthetic != "" {
+		return nil // Wrapper; the wrapped function is reported instead.
+	}
+	// A generic result is not an error, even if instantiated with one.
+	if len(errorResults(fn)) == 0 {
+		return nil
+	}
+	return fn
+}
+
+// errorResults returns the indices of fn's results of type error.
+func errorResults(fn *ssa.Function) []int {
+	var idxs []int
+	results := fn.Signature.Results()
+	for i := range results.Len() {
+		if types.Identical(results.At(i).Type(), errType) {
+			idxs = append(idxs, i)
+		}
+	}
+	return idxs
 }
 
 var errType = types.Universe.Lookup("error").Type()
@@ -210,7 +549,7 @@ var errType = types.Universe.Lookup("error").Type()
 //
 // Does not check whether the underlying type is an error.
 func returnErrs(call *ssa.Call) map[int]ssa.Value {
-	if call.Type() == errType {
+	if types.Identical(call.Type(), errType) {
 		return map[int]ssa.Value{0: call}
 	}
 
@@ -222,66 +561,12 @@ func returnErrs(call *ssa.Call) map[int]ssa.Value {
 	errs := make(map[int]ssa.Value, 1) // Most functions will only return a single error.
 	for _, r := range *call.Referrers() {
 		if extr, ok := r.(*ssa.Extract); ok {
-			if extr.Type() == errType {
+			if types.Identical(extr.Type(), errType) {
 				errs[extr.Index] = extr
 			}
 		}
 	}
 	return errs
-}
-
-// findCaller finds all calls to the given function.
-func findCaller(funcs []*ssa.Function, fn *ssa.Function) []*ssa.Call {
-	calls := make([]*ssa.Call, 0)
-	for _, f := range funcs {
-		for _, block := range f.Blocks {
-			for _, instr := range block.Instrs {
-				if call, ok := instr.(*ssa.Call); ok {
-					if call.Call.StaticCallee() == fn {
-						calls = append(calls, call)
-					}
-				}
-			}
-		}
-	}
-
-	return calls
-}
-
-// findUsingInstruction returns the first [ssa.Instruction]
-// that has val as one of it's operators.
-//
-// Only instructions succeeding after inside the parent function are searched.
-func findUsingInstruction(after ssa.Instruction, val ssa.Value) ssa.Instruction {
-	// Search inside current block first, then in subsequent blocks.
-	var buf [10]*ssa.Value
-	currBlock := after.Block()
-	var search bool
-	for _, instr := range currBlock.Instrs {
-		// TODO: This is very inefficient.
-		if !search {
-			if instr == after {
-				search = true
-				continue
-			}
-		}
-		for _, op := range instr.Operands(buf[:0]) {
-			if *op == val {
-				return instr
-			}
-		}
-	}
-	blocks := currBlock.Parent().Blocks
-	for i := currBlock.Index + 1; i < len(blocks); i++ {
-		for _, instr := range blocks[i].Instrs {
-			for _, op := range instr.Operands(buf[:0]) {
-				if *op == val {
-					return instr
-				}
-			}
-		}
-	}
-	return nil
 }
 
 // isUnexportedFunc returns true if fn is unexported or a closure.
@@ -296,32 +581,7 @@ func isUnexportedFunc(fn *ssa.Function) bool {
 	return !ast.IsExported(name)
 }
 
-// hasGenericReturns returns true if fn has generic return values, i.e.
-//
-//	func[T any]() T
-func hasGenericReturns(fn *ssa.Function) bool {
-	orig := fn.Origin()
-	if orig == nil {
-		return false
-	}
-	sig := orig.Signature
-	results := sig.Results()
-	for i := 0; i < results.Len(); i++ {
-		res := results.At(i)
-		if _, ok := res.Type().(*types.TypeParam); ok {
-			return true
-		}
-	}
-	return false
-}
-
 // retValPos returns the position of the nth return value of fn.
 func retValPos(fn *ssa.Function, n int) token.Pos {
-	if fn == nil {
-		return token.NoPos
-	}
-	sig := fn.Signature
-	results := sig.Results()
-	res := results.At(n)
-	return res.Pos()
+	return fn.Signature.Results().At(n).Pos()
 }

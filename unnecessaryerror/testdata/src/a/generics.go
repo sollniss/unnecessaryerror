@@ -330,3 +330,12 @@ func GenericTupleMethod() {
 	var g genericTupleMethodIface = &genericTupleMethod[string]{}
 	log.Print(g.genericTupleMethod(""))
 }
+
+func onlyDeferredGeneric[T any]() error { // Not a candidate: never called for its result.
+	return errors.New("")
+}
+
+func OnlyDeferredGeneric() {
+	defer onlyDeferredGeneric[int]()
+	go onlyDeferredGeneric[int]()
+}

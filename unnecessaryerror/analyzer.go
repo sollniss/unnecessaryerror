@@ -102,9 +102,7 @@ func buildIndex(pkg *ssa.Package, src []*ssa.Function) *index {
 		}
 		seenTypes.Set(named, true)
 		for _, T := range []types.Type{named, types.NewPointer(named)} {
-			mset := pkg.Prog.MethodSets.MethodSet(T)
-			for i := range mset.Len() {
-				sel := mset.At(i)
+			for sel := range pkg.Prog.MethodSets.MethodSet(T).Methods() {
 				if ast.IsExported(sel.Obj().Name()) {
 					continue // Never a candidate.
 				}
@@ -183,6 +181,12 @@ func origin(fn *ssa.Function) *ssa.Function {
 		return orig
 	}
 	return fn
+}
+
+// isInstantiation reports whether fn is the synthetic wrapper the SSA builder
+// emits for an instantiation of a generic function, whose body calls the origin.
+func isInstantiation(fn *ssa.Function) bool {
+	return fn.Synthetic != "" && fn.Origin() != nil
 }
 
 // localInstance returns the instantiated generic type declared in pkg that
@@ -469,7 +473,18 @@ func findCandidates(idx *index) map[*ssa.Function]map[int][]ssa.Value {
 		}
 	}
 	for callee, calls := range idx.callers {
-		if fn := reportedFunc(callee); fn != nil {
+		fn := reportedFunc(callee)
+		if fn == nil {
+			continue
+		}
+		// An instantiation wrapper only forwards to the generic body; the
+		// calls that matter are those to the wrapper itself, which are
+		// indexed under the wrapper. Without this, a generic function that
+		// is only deferred would be a candidate, unlike a plain one.
+		calls = slices.DeleteFunc(slices.Clone(calls), func(call *ssa.Call) bool {
+			return isInstantiation(call.Parent())
+		})
+		if len(calls) > 0 {
 			add(fn, calls...)
 		}
 	}

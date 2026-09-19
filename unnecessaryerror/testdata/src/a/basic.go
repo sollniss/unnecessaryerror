@@ -23,6 +23,7 @@
 //   - methods.go: methods, interfaces, method expressions and method values
 //   - external.go: values and functions passed to other packages
 //   - generics.go: generic functions and types
+//   - genericmethods.go: generic methods
 //   - iterators.go: range-over-func loops
 package a
 
